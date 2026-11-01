@@ -51,7 +51,7 @@ h4 { font-size: 0.9rem; margin: 16px 0 6px; color: var(--muted); text-transform:
 code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
 button, input, select { font: inherit; color: inherit; }
 .muted { color: var(--muted); }
-.hidden { display: none !important; }
+.hidden, [hidden] { display: none !important; } /* hidden must win over any display rule */
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .skip { position: absolute; left: -999px; top: 0; background: var(--gold); color: #000; padding: 8px 12px; z-index: 100; }
 .skip:focus { left: 8px; }
