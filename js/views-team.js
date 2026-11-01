@@ -468,10 +468,11 @@ const Views = window.Views || (window.Views = {});
         const { bio, overview } = await API.athlete(f.league, f.id);
         const st = overview && overview.statistics;
         const split = st && st.splits && st.splits[0];
-        const line = split ? st.labels.slice(0, 5).map((l, i) => `${l} ${split.stats[i]}`).join(' · ') : 'No stats yet';
+        const played = split && split.stats.some((v) => !/^-+$/.test(String(v).trim()));
+        const line = played ? st.labels.slice(0, 5).map((l, i) => `${l} ${split.stats[i]}`).join(' · ') : 'No stats yet this season';
         return `<li class="card fav"><div class="fav-head">${bio.headshot ? `<img class="headshot sm" src="${esc(bio.headshot.href)}" alt="${esc(bio.displayName)}">` : ''}
           <div><a href="${playerHref(f.league, f.id)}"><b>${esc(bio.displayName || f.name)}</b></a><span class="muted">${esc(TEAM_BY_LEAGUE[f.league].name)} · ${esc(bio.position ? bio.position.abbreviation : '')}</span></div>
-          ${UI.star(f.league, f.id, bio.displayName || f.name)}</div><p class="fav-line">${esc(split ? split.displayName : '')}: ${esc(line)}</p></li>`;
+          ${UI.star(f.league, f.id, bio.displayName || f.name)}</div><p class="fav-line">${played ? `${esc(split.displayName)}: ` : ''}${esc(line)}</p></li>`;
       } catch (e) { return `<li class="card fav"><b>${esc(f.name)}</b> <span class="muted">stats unavailable</span> ${UI.star(f.league, f.id, f.name)}</li>`; }
     }));
     return `<h2>Pinned players</h2><ul class="favs">${cards.join('')}</ul>`;

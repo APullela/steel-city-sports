@@ -413,6 +413,7 @@ caption { text-align: left; }
   .notice { margin: 10px 12px 0; }
   .jump a, .seg, .subtab, .back, .btn { min-height: 40px; display: inline-flex; align-items: center; }
   .star { min-width: 36px; min-height: 36px; }
+  th button { min-height: 36px; }
   main { padding: 12px; }
   .week { grid-template-columns: 1fr; }
   .day { min-height: 0; display: grid; grid-template-columns: 64px 1fr; gap: 8px; align-items: start; }

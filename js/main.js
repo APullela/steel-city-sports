@@ -71,9 +71,13 @@ const App = (window.App = {
       stamp();
     } catch (err) {
       console.error(err);
-      root.innerHTML = `<div class="card error"><h2>Couldn't load this page</h2><p>${UI.esc(err.message || err)}</p>
-        <p>${API.mode === 'direct' ? 'The page is talking to the sports APIs directly and some of them block that. Start the local server with <code>python3 server.py</code> and open <a href="http://localhost:8000">http://localhost:8000</a>.' : 'The sports APIs may be down. It will try again automatically.'}</p>
-        <button type="button" class="btn" data-action="retry">Try again</button></div>`;
+      const notFound = /HTTP 404/.test(err.message || '');
+      const why = notFound ? 'That game or player could not be found. The link may be old or mistyped.'
+        : location.protocol === 'file:' ? 'The page was opened as a file, and some sports APIs block that. Start the local server with <code>python3 server.py</code> and open <a href="http://localhost:8000">http://localhost:8000</a>.'
+        : !navigator.onLine ? "You're offline. It will try again when you reconnect."
+        : "The sports data couldn't be reached just now. It will try again automatically.";
+      root.innerHTML = `<div class="card error"><h2>${notFound ? 'Not found' : "Couldn't load this page"}</h2><p>${why}</p>
+        <div class="btn-row"><button type="button" class="btn" data-action="retry">Try again</button> <a class="btn" href="#home">Go to Home</a></div></div>`;
     }
     schedule();
   }
