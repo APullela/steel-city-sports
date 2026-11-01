@@ -1,18 +1,22 @@
 /*
  * App shell: routing, tabs (remembered, swipeable), the refresh loop,
  * "last updated", stale-data warning, notifications, global search,
- * theme toggle and all the delegated click/keyboard handlers.
+ * settings (data saver, theme) and all the delegated click/keyboard handlers.
  *
- * Refresh intervals live here:
+ * Refresh intervals live here, as [data saver, normal]:
  */
-const REFRESH_LIVE_MS = 10 * 1000;        // while any Pittsburgh game is live
-const REFRESH_IDLE_MS = 5 * 60 * 1000;    // otherwise
-const PLAYOFFS_MIN_MS = 60 * 1000;        // the playoffs page redraws at most once a minute
+const REFRESH = {
+  live: [30e3, 10e3],          // while a Pittsburgh game (or the game on screen) is live
+  soon: [60e3, 60e3],          // a game starts within 20 minutes, or just ended
+  idle: [30 * 60e3, 5 * 60e3], // otherwise; it also wakes up 20 minutes before the next game
+};
+const PLAYOFFS_MIN_MS = 60 * 1000; // the playoffs page redraws at most once a minute
 
 const App = (window.App = {
   live: {},   // team key -> true while that team is playing
   viewLive: false, // the game page on screen is live (any teams)
-  games: {},  // team key -> latest scoreboard game (for notifications)
+  games: {},  // team key -> latest live-checked game (for notifications)
+  soon: false, // a game is about to start (or just ended and isn't final yet)
   get liveAny() { return Object.values(this.live).some(Boolean); },
   get fast() { return this.liveAny || this.viewLive; },
   // Views report what they found so the refresh rate can follow live games.
@@ -59,6 +63,7 @@ const App = (window.App = {
     if (!r) { location.replace('#home'); return; }
     route = r;
     setActiveTab(r.tab);
+    document.body.dataset.team = TEAMS[r.tab] ? r.tab : ''; // team pages take on the team's color
     if (r.top) store.set('tab', r.tab);
     document.title = `${r.view === 'home' ? 'Steel City Sports' : (TEAMS[r.tab] ? TEAMS[r.tab].name : r.tab[0].toUpperCase() + r.tab.slice(1)) + ' · Steel City Sports'}`;
     if (!first) { navCount++; window.scrollTo(0, 0); root.focus({ preventScroll: true }); }
@@ -87,13 +92,23 @@ const App = (window.App = {
   let timer = 0;
   let lastTick = Date.now();
   let ticking = false;
+  function delay() {
+    const k = Data.saver ? 0 : 1;
+    if (App.fast) return REFRESH.live[k];
+    if (App.soon) return REFRESH.soon[k];
+    // nothing on: sleep until 20 minutes before the next game (no data used meanwhile)
+    const untilNext = API.nextStart() - 20 * 60e3 - Date.now();
+    return Math.max(REFRESH.soon[k], Math.min(REFRESH.idle[k], untilNext));
+  }
   function schedule() {
     clearTimeout(timer);
-    timer = setTimeout(() => tick(), App.fast ? REFRESH_LIVE_MS : REFRESH_IDLE_MS);
+    timer = setTimeout(() => tick(), delay());
   }
 
   async function tick(manual = false) {
     if (ticking) return;
+    // with data saver, don't spend data on a page nobody is looking at
+    if (!manual && document.hidden && Data.saver) { schedule(); return; }
     ticking = true;
     lastTick = Date.now();
     clearTimeout(timer);
@@ -126,7 +141,7 @@ const App = (window.App = {
   // Phones pause timers while the app is in the background, so catch up the
   // moment it's back on screen, and again when the connection returns.
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && Date.now() - lastTick > (App.fast ? 5000 : 30000)) tick();
+    if (document.visibilityState === 'visible' && Date.now() - lastTick > Math.min(delay(), 60e3)) tick();
   });
   window.addEventListener('pageshow', (e) => { if (e.persisted) tick(); });
   window.addEventListener('online', () => tick(true));
@@ -134,7 +149,7 @@ const App = (window.App = {
 
   function stamp() {
     const el = document.getElementById('updated');
-    el.innerHTML = `<span class="lu-label">Last updated: </span>${UI.clock(new Date())}${App.fast ? ' · live' : ''}`;
+    el.innerHTML = `<span class="lu-label">Updated </span>${UI.time(new Date())}${App.fast ? ' · <b class="lu-live">live</b>' : ''}`;
     const notice = document.getElementById('notice');
     if (!navigator.onLine) {
       notice.hidden = false;
@@ -153,7 +168,9 @@ const App = (window.App = {
   // ---------- live detection + notifications ----------
   let primed = false;
   async function checkGames() {
-    const results = await Promise.all(Object.values(TEAMS).map((T) => API.liveGame(T, 8).catch(() => null).then((ev) => [T, ev])));
+    // only games that are on, about to start or just ended are checked (about 1 KB each)
+    const results = await Promise.all(Object.values(TEAMS).map((T) => API.activeGame(T).catch(() => null).then((ev) => [T, ev])));
+    App.soon = results.some(([, ev]) => ev && !ev.completed && ev.state !== 'in');
     results.forEach(([T, ev]) => {
       const prev = App.games[T.key];
       App.games[T.key] = ev;
@@ -171,7 +188,7 @@ const App = (window.App = {
   const notifyOn = () => store.get('notify', '0') === '1' && 'Notification' in window && Notification.permission === 'granted';
   function notify(T, title, body, ev) {
     try {
-      const n = new Notification(title, { body, icon: `https://a.espncdn.com/i/teamlogos/${T.league}/500/pit.png`, tag: `${T.key}-${ev.id}` });
+      const n = new Notification(title, { body, icon: 'icons/icon-192.png', tag: `${T.key}-${ev.id}` });
       n.onclick = () => { window.focus(); location.hash = `#game/${T.league}/${ev.id}`; };
     } catch (e) { /* some browsers only allow notifications from a service worker */ }
   }
@@ -192,20 +209,42 @@ const App = (window.App = {
     UI.toast('You will be alerted when Pittsburgh scores, or a game starts or ends.');
   });
 
-  // ---------- theme ----------
-  function paintTheme() {
-    const t = document.documentElement.dataset.theme || 'dark';
-    const b = document.getElementById('theme');
-    b.setAttribute('aria-label', t === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
-    b.innerHTML = t === 'dark'
-      ? '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>'
-      : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 13A9 9 0 1 1 11 3a7 7 0 0 0 10 10z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>';
+  // ---------- settings: data saver, data used, theme ----------
+  const sheet = document.getElementById('settings');
+  const size = (b) => (b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1e3))} KB`);
+  function paintSettings() {
+    const used = Data.used, m = Data.mode, theme = document.documentElement.dataset.theme;
+    const radio = (name, v, on, label, note) => `<label class="opt${on ? ' on' : ''}"><input type="radio" name="${name}" value="${v}"${on ? ' checked' : ''}>
+      <span><b>${label}</b>${note ? `<small>${note}</small>` : ''}</span></label>`;
+    sheet.innerHTML = `<form method="dialog" class="sheet-body">
+      <div class="sheet-top"><h2>Settings</h2><button class="icon-btn" value="close" aria-label="Close settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button></div>
+      <div class="meter">
+        <p class="meter-num"><b>${size(used.bytes)}</b> <span>used this month</span></p>
+        <p class="muted">${used.req.toLocaleString()} downloads since the 1st. Following a live game costs about 0.3&nbsp;MB an hour with data saver on, about 1&nbsp;MB an hour on its box score page.</p>
+      </div>
+      <fieldset><legend>Data saver</legend>
+        ${radio('saver', 'auto', m === 'auto', 'Automatic', Data.onWifi ? 'Off right now: you\'re on Wi-Fi.' : 'On unless the browser reports Wi-Fi. iPhones never report it, so there it stays on.')}
+        ${radio('saver', 'on', m === 'on', 'Always on', 'Live scores every 30 seconds. Standings, rosters and stats are kept for hours.')}
+        ${radio('saver', 'off', m === 'off', 'Off', 'Live scores every 10 seconds and sharper photos. Best on Wi-Fi.')}
+      </fieldset>
+      <fieldset><legend>Look</legend><div class="opt-row">
+        ${radio('theme', 'dark', theme === 'dark', 'Night', '')}${radio('theme', 'light', theme === 'light', 'Newsprint', '')}</div>
+      </fieldset>
+      <div class="saved"><p>Saved on this device: <b>${size(API.savedSize())}</b><br><span class="muted">Scores and stats, so the app opens without downloading again.</span></p>
+        <button type="button" class="btn" data-action="clear-saved">Clear</button></div>
+    </form>`;
   }
-  document.getElementById('theme').addEventListener('click', () => {
-    const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
-    document.documentElement.dataset.theme = next;
-    store.set('theme', next);
-    paintTheme();
+  document.getElementById('open-settings').addEventListener('click', () => {
+    paintSettings();
+    if (sheet.showModal) sheet.showModal(); else sheet.setAttribute('open', '');
+  });
+  sheet.addEventListener('click', (e) => { if (e.target === sheet) sheet.close(); }); // tap outside closes
+  sheet.addEventListener('change', (e) => {
+    const el = e.target;
+    if (el.name === 'saver') { Data.mode = el.value; schedule(); }
+    if (el.name === 'theme') { document.documentElement.dataset.theme = el.value; store.set('theme', el.value); }
+    paintSettings();
   });
 
   document.getElementById('refresh').addEventListener('click', () => tick(true));
@@ -275,6 +314,12 @@ const App = (window.App = {
         Views.calendar.toggle(root, act.dataset.v);
       } else if (a === 'retry') {
         navigate();
+      } else if (a === 'clear-saved') {
+        API.clearSaved();
+        try { localStorage.removeItem('scs:perf'); } catch (err) { /* ignore */ }
+        if ('caches' in window) caches.delete('scs-img');
+        paintSettings();
+        UI.toast('Saved data cleared');
       }
       return;
     }
@@ -419,15 +464,17 @@ const App = (window.App = {
   }
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || ['localhost', '127.0.0.1'].includes(location.hostname))) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
+    // the service worker reports what it downloads (app files, images) for the data meter
+    navigator.serviceWorker.addEventListener('message', (e) => { if (e.data && e.data.bytes) Data.add(e.data.bytes); });
   }
 
   // ---------- start ----------
   (async function start() {
-    paintTheme();
     paintNotifyButton();
     await API.init();
     if (!parse()) history.replaceState(null, '', '#' + store.get('tab', 'home'));
+    // find any live game first so the first screen already shows it (waits 2.5 s at most)
+    await Promise.race([checkGames().catch(() => {}), new Promise((r) => setTimeout(r, 2500))]);
     await navigate(true);
-    checkGames().then(schedule).catch(() => {});
   })();
 })();

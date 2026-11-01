@@ -18,15 +18,15 @@ const Views = window.Views || (window.Views = {});
 
   // ---------- loading one team's data ----------
   async function loadTeam(T) {
-    const [info, sched, st, live] = await Promise.all([
+    // live scores are laid onto the schedule by the refresh loop's live checks (API.activeGame)
+    const [info, sched, st] = await Promise.all([
       API.team(T),
       API.schedule(T),
       API.standings(T.league).catch(() => null),
-      API.liveGame(T, App.liveAny ? 8 : 60).catch(() => null),
     ]);
     const now = Date.now();
     const events = sched.events;
-    let liveEv = live && live.state === 'in' ? live : events.find((e) => e.state === 'in') || null;
+    const liveEv = events.find((e) => e.state === 'in') || null;
     const done = events.filter((e) => e.completed);
     const last = done[done.length - 1] || null;
     const upcoming = events.filter((e) => e.state === 'pre' && +e.date > now - 3 * 3600e3);
@@ -120,11 +120,14 @@ const Views = window.Views || (window.Views = {});
         <rect class="${on('onFirst')}" x="26" y="13" width="10" height="10" transform="rotate(45 31 18)"/></svg></span>`);
       if (s.outs != null) out.push(`<span class="sit"><b>${s.outs}</b> out${s.outs === 1 ? '' : 's'} <span class="outs" aria-hidden="true">${[0, 1, 2].map((i) => `<i class="${i < s.outs ? 'on' : ''}"></i>`).join('')}</span></span>`);
       if (s.balls != null) out.push(`<span class="sit">Count ${s.balls}-${s.strikes}</span>`);
-      if (s.batter && s.batter.athlete) out.push(`<span class="sit">At bat: ${esc(s.batter.athlete.shortName || s.batter.athlete.displayName)}</span>`);
+      const bat = s.batter && s.batter.athlete;
+      if (bat && (bat.shortName || bat.displayName)) out.push(`<span class="sit">At bat: ${esc(bat.shortName || bat.displayName)}</span>`);
     } else if (T.league === 'nhl') {
-      if (extra.pp) out.push(`<span class="sit red">Power play: ${esc(extra.pp.team)}${extra.pp.time ? ` (${esc(extra.pp.time)})` : ''}</span>`);
-      else if (extra.pp === null) out.push('<span class="sit">Even strength</span>');
-      if (extra.pp && extra.pp.empty) out.push('<span class="sit">Empty net</span>');
+      // the NHL API (through the proxy) says which team; ESPN only says yes or no
+      const pp = extra.pp !== undefined ? extra.pp : s.powerPlay != null ? (s.powerPlay ? { team: '', empty: s.emptyNet } : null) : undefined;
+      if (pp) out.push(`<span class="sit red">Power play${pp.team ? `: ${esc(pp.team)}` : ''}${pp.time ? ` (${esc(pp.time)})` : ''}</span>`);
+      else if (pp === null) out.push('<span class="sit">Even strength</span>');
+      if ((pp && pp.empty) || s.emptyNet) out.push('<span class="sit">Empty net</span>');
     }
     return out.length ? `<div class="situation">${out.join('')}</div>` : '';
   }
@@ -337,27 +340,43 @@ const Views = window.Views || (window.Views = {});
 
   function headHTML(d) {
     const live = d.live ? ` ${UI.live()}` : '';
-    return `<div class="team-head">${UI.logo(d.info.logo, d.T.full, 'logo xl')}
-      <div><h1>${esc(d.T.name)}${live}</h1>
-      <p class="team-sub"><span data-flash="rec-${d.T.key}">${esc(d.info.record)}</span>${standingText(d) ? ` · ${esc(standingText(d))}` : ''}${d.sched.seasonName ? ` · ${esc(d.sched.seasonName)} season` : ''}</p>
+    return `<div class="team-head team-${d.T.key}">${UI.logo(d.info.logo, d.T.full, 'logo xl')}
+      <div class="th-text"><p class="th-kicker">${esc(d.T.league.toUpperCase())}${d.sched.seasonName ? ` · ${esc(d.sched.seasonName)}` : ''}</p>
+      <h1>${esc(d.T.name)}${live}</h1>
+      <p class="team-sub"><b class="th-rec" data-flash="rec-${d.T.key}">${esc(d.info.record)}</b>${standingText(d) ? `<span>${esc(standingText(d))}</span>` : ''}</p>
       ${d.odds != null ? `<a class="odds-pill" href="#playoffs" title="Simulated ${Odds.SIMS.toLocaleString()} times from the current standings">Playoff odds <b data-flash="odds-${d.T.key}">${Odds.format(d.odds)}</b></a>` : ''}</div></div>`;
   }
 
   async function cardsHTML(d) {
     // the last game's summary gives us its top performer
-    if (d.last) {
-      try { d.perf = topPerformer(await API.summary(d.T.league, d.last.id, 3600), d.T); } catch (e) { d.perf = ''; }
-    }
+    if (d.last) d.perf = await perfFor(d.T, d.last);
     if (d.offseason) return `<p class="offseason-note">The ${esc(d.T.name)} season is over.</p><div class="grid3">${offseasonCards(d)}</div>`;
     const pp = d.live && d.T.league === 'nhl' ? await API.nhlSituation() : null;
     return `<div class="grid3">${lastCard(d, d.perf)}${currentCard(d, pp)}${nextCard(d)}</div>`;
+  }
+
+  // A finished game's top performer never changes, so it's worked out once
+  // (from the 40 KB box score) and the one line is kept on the device.
+  const PERF_KEY = 'scs:perf';
+  async function perfFor(T, ev) {
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem(PERF_KEY)) || {}; } catch (e) { /* none */ }
+    if (saved[ev.id] != null) return saved[ev.id];
+    try {
+      const perf = topPerformer(await API.summary(T.league, ev.id), T);
+      saved[ev.id] = perf;
+      const keys = Object.keys(saved);
+      keys.slice(0, Math.max(0, keys.length - 20)).forEach((k) => delete saved[k]);
+      try { localStorage.setItem(PERF_KEY, JSON.stringify(saved)); } catch (e) { /* ignore */ }
+      return perf;
+    } catch (e) { return ''; }
   }
 
   // ---------- team view ----------
   Views.team = {
     async render(root, { team }) {
       const T = TEAMS[team];
-      root.innerHTML = `<div class="team-head skel"><div class="sk sk-logo"></div><div class="sk sk-title"></div></div>${UI.skeleton('cards')}${UI.skeleton('rows', 6)}`;
+      root.innerHTML = `<div class="team-head team-${T.key} skel"><div class="sk sk-logo"></div><div class="sk sk-title"></div></div>${UI.skeleton('cards')}${UI.skeleton('rows', 6)}`;
       const d = await loadTeam(T);
       App.noteLive(T.key, d.live);
       root.innerHTML = `
@@ -470,7 +489,7 @@ const Views = window.Views || (window.Views = {});
         const split = st && st.splits && st.splits[0];
         const played = split && split.stats.some((v) => !/^-+$/.test(String(v).trim()));
         const line = played ? st.labels.slice(0, 5).map((l, i) => `${l} ${split.stats[i]}`).join(' · ') : 'No stats yet this season';
-        return `<li class="card fav"><div class="fav-head">${bio.headshot ? `<img class="headshot sm" src="${esc(bio.headshot.href)}" alt="${esc(bio.displayName)}">` : ''}
+        return `<li class="card fav"><div class="fav-head">${bio.headshot ? UI.headshot(bio.headshot.href, bio.displayName, 'headshot sm') : ''}
           <div><a href="${playerHref(f.league, f.id)}"><b>${esc(bio.displayName || f.name)}</b></a><span class="muted">${esc(TEAM_BY_LEAGUE[f.league].name)} · ${esc(bio.position ? bio.position.abbreviation : '')}</span></div>
           ${UI.star(f.league, f.id, bio.displayName || f.name)}</div><p class="fav-line">${played ? `${esc(split.displayName)}: ` : ''}${esc(line)}</p></li>`;
       } catch (e) { return `<li class="card fav"><b>${esc(f.name)}</b> <span class="muted">stats unavailable</span> ${UI.star(f.league, f.id, f.name)}</li>`; }

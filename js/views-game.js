@@ -130,23 +130,37 @@
 
   async function gameHTML(league, id) {
     const T = TEAM_BY_LEAGUE[league];
-    const firstTry = await API.summary(league, id, 30);
-    const comp = firstTry.header.competitions[0];
-    const isLive = comp.status.type.state === 'in';
-    const sum = isLive ? await API.summary(league, id, 8) : firstTry;
-    const c2 = sum.header.competitions[0];
+    let sum = await API.summary(league, id);
+    let c2 = sum.header.competitions[0];
+    const startsAt = +new Date(c2.date);
+    // While it's on (or about to start), the score and situation come from the
+    // 1 KB live check; the 40 KB box score is only fetched again when the score
+    // changes (or every 20 seconds, 5 minutes with data saver).
+    let o = null;
+    if (c2.status.type.state === 'in' || (c2.status.type.state === 'pre' && Date.now() > startsAt - 20 * 60e3)) {
+      o = await API.liveCheck(league, id, c2.competitors.map((c) => String(c.team.id))).catch(() => null);
+      sum = await API.summary(league, id); // from memory unless the live check found a change
+      c2 = sum.header.competitions[0];
+    }
     const away = sideOf(c2.competitors.find((c) => c.homeAway === 'away'), league);
     const home = sideOf(c2.competitors.find((c) => c.homeAway === 'home'), league);
-    const st = c2.status.type;
-    App.viewLive = isLive; // a live game page refreshes every 10 seconds, whoever is playing
+    let st = c2.status.type;
+    if (o && !st.completed) { // the live check is newer than the box score
+      st = Object.assign({}, st, o.type);
+      if (o.scores[away.id] != null) away.score = o.scores[away.id];
+      if (o.scores[home.id] != null) home.score = o.scores[home.id];
+    }
+    const isLive = st.state === 'in';
+    App.viewLive = isLive; // a live game page keeps refreshing, whoever is playing
     if (away.id === T.id || home.id === T.id) App.noteLive(T.key, isLive ? { id } : null, true);
 
-    // live extras come from the scoreboard (possession, outs, power play)
+    // live extras: possession (NFL), outs and runners (MLB), power play (NHL)
     let live = '';
-    if (isLive) {
-      const ev = await API.liveGame(T).catch(() => null);
-      const pp = league === 'nhl' ? await API.nhlSituation() : null;
-      if (ev && ev.id === String(id)) live = Views.situationHTML(ev, T, { pp });
+    if (isLive && o) {
+      const mine = home.id === T.id ? home : away;
+      const ev = { situation: o.situation, us: mine, them: mine === home ? away : home };
+      const pp = league === 'nhl' && (away.id === T.id || home.id === T.id) ? await API.nhlSituation() : undefined;
+      live = Views.situationHTML(ev, T, { pp });
     }
     const date = new Date(c2.date);
     const flag = /POSTPONED|DELAY|SUSPENDED|CANCEL/.test(st.name) ? `<span class="flag-pill">${esc(st.description)}</span>` : '';
@@ -210,7 +224,7 @@
     let gameStats = '';
     if (eventId) {
       try {
-        const sum = await API.summary(league, eventId, 60);
+        const sum = await API.summary(league, eventId);
         const rows = [];
         (sum.boxscore.players || []).forEach((tp) => tp.statistics.forEach((g) => {
           const a = (g.athletes || []).find((x) => String(x.athlete.id) === String(id));
@@ -259,7 +273,7 @@
     const back = eventId ? `#game/${league}/${eventId}` : `#${T.key}`;
     return `${backButton(back)}
       <section class="card player-head">
-        ${bio.headshot ? `<img class="headshot" src="${esc(bio.headshot.href)}" alt="Photo of ${esc(bio.displayName)}">` : '<div class="headshot none" aria-hidden="true"></div>'}
+        ${bio.headshot ? UI.headshot(bio.headshot.href, `Photo of ${bio.displayName}`) : '<div class="headshot none" aria-hidden="true"></div>'}
         <div><h1>${esc(bio.displayName || 'Player')} ${UI.star(league, id, bio.displayName || '')}</h1>
           ${injury ? `<p><span class="inj-pill">${esc(injury.status || 'Injured')}</span>${injury.detail ? ` <span class="muted">${esc(injury.detail)}</span>` : ''}</p>` : '<p class="muted">No injury listed</p>'}
           <dl class="facts">${facts.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl></div>

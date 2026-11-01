@@ -39,6 +39,8 @@ ALLOWED_HOSTS = {
 # Seconds to keep a response. Live data is kept just long enough to absorb
 # several open tabs refreshing at once; slow-moving data is kept longer.
 def cache_seconds(url):
+    if any(k in url for k in ("/status", "/situation", "/competitors/")):
+        return 5  # ESPN's small per-game live checks
     if any(k in url for k in ("/scoreboard", "/summary", "/score/now", "/gamecenter/")):
         return 8
     if any(k in url for k in ("/standings", "/leaders", "/playoff-bracket", "/postseason")):
@@ -66,7 +68,7 @@ def fetch_upstream(url):
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     extensions_map = dict(http.server.SimpleHTTPRequestHandler.extensions_map, **{
-        ".webmanifest": "application/manifest+json", ".js": "text/javascript"})
+        ".webmanifest": "application/manifest+json", ".js": "text/javascript", ".woff2": "font/woff2"})
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)

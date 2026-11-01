@@ -48,8 +48,26 @@ const UI = (() => {
   }, 1000);
 
   // ---------- small components ----------
-  const logo = (src, alt, cls = 'logo') =>
-    src ? `<img class="${cls}" src="${esc(src)}" alt="${esc(alt)} logo" loading="lazy" onerror="this.style.visibility='hidden'">` : `<span class="${cls} logo-missing" aria-hidden="true"></span>`;
+  // ESPN's images are huge (a team logo is 66 KB, a player photo 200 KB), so
+  // ask its resizer for just the size shown: about 3-6 KB a logo.
+  function sized(src, w, h = w) {
+    const m = /^https?:\/\/a\.espncdn\.com(?:\/combiner\/i\?img=)?(\/i\/[^?&]+?\.png)/i.exec(src || '');
+    return m ? `https://a.espncdn.com/combiner/i?img=${m[1]}&w=${w}&h=${h}` : src;
+  }
+  // crossorigin lets the service worker keep ESPN images, so each downloads once
+  const cors = (url) => (/^https:\/\/a\.espncdn\.com\//.test(url) ? ' crossorigin="anonymous"' : '');
+  const logo = (src, alt, cls = 'logo') => {
+    if (!src) return `<span class="${cls} logo-missing" aria-hidden="true"></span>`;
+    const url = sized(src, /\b(xs|sm)\b/.test(cls) ? 48 : 96); // two sizes only, so cached copies get reused
+    return `<img class="${cls}" src="${esc(url)}" alt="${esc(alt)} logo" loading="lazy" decoding="async"${cors(url)} onerror="this.style.visibility='hidden'">`;
+  };
+  // player photos: 1x in data saver, sharper otherwise
+  const headshot = (src, alt, cls = 'headshot') => {
+    const [w, h] = /\bsm\b/.test(cls) ? [54, 40] : [140, 104];
+    const k = Data.saver ? 1 : 1.5;
+    const url = sized(src, Math.round(w * k), Math.round(h * k));
+    return `<img class="${cls}" src="${esc(url)}" alt="${esc(alt)}" loading="lazy" decoding="async"${cors(url)} onerror="this.style.visibility='hidden'">`;
+  };
 
   // W / L / T badges carry the letter and a word for screen readers, not just a color.
   function badge(result, detail = '') {
@@ -185,7 +203,7 @@ const UI = (() => {
   }
 
   return {
-    esc, dayLabel, shortDate, time, when, clock, tzName, sameDay, countdown, logo, badge, live, flagPill, skeleton, empty,
+    esc, dayLabel, shortDate, time, when, clock, tzName, sameDay, countdown, logo, headshot, sized, badge, live, flagPill, skeleton, empty,
     compareBar, lineChart, table, sortTable, favorites, star, snapshot, flashChanges, toast,
   };
 })();
